@@ -5,10 +5,6 @@ import pandas as pd
 # ------------- Notion helpers -------------
 
 def get_text_from_property(prop):
-    """
-    Safely extract plain text from various Notion property types.
-    Adjust if your schema is different.
-    """
     if prop is None:
         return ""
 
@@ -28,12 +24,10 @@ def get_text_from_property(prop):
         return prop["number"]
     if t == "checkbox":
         return prop["checkbox"]
-    # fallback
     return str(prop)
 
 
 def fetch_notion_rows(notion: Client, database_id: str):
-    """Fetch all rows from the Notion database (with pagination)."""
     results = []
     cursor = None
 
@@ -53,14 +47,6 @@ def fetch_notion_rows(notion: Client, database_id: str):
 
 
 def rows_to_dataframe(rows):
-    """
-    Convert Notion rows to a pandas DataFrame with the properties we care about:
-    - scribal hand id
-    - scribe's name
-    - shelfmark
-    - addition (checkbox)
-    """
-
     records = []
     for r in rows:
         props = r.get("properties", {})
@@ -69,7 +55,6 @@ def rows_to_dataframe(rows):
         scribe_name = get_text_from_property(props.get("scribe's name"))
         shelfmark = get_text_from_property(props.get("shelfmark"))
 
-        # "addition" is a checkbox property
         addition_raw = props.get("addition", {})
         addition_val = False
         if addition_raw and addition_raw.get("type") == "checkbox":
@@ -91,77 +76,73 @@ def rows_to_dataframe(rows):
 # ------------- Streamlit app -------------
 
 def main():
-    st.set_page_config(page_title="Scribal Hand Explorer", layout="wide")
-    st.title("📜 Scribal Hand Explorer")
+    st.set_page_config(layout="wide")
 
-    # Load Notion client from Streamlit secrets
+    # 🔒 Hide Streamlit menu/header/footer
+    st.markdown(
+        """
+        <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     notion_api_key = st.secrets["NOTION_API_KEY"]
     database_id = st.secrets["DATABASE_ID"]
     notion = Client(auth=notion_api_key)
 
-    st.info("Fetching data from Notion…")
     rows = fetch_notion_rows(notion, database_id)
     df = rows_to_dataframe(rows)
 
     if df.empty:
-        st.error("No data returned from Notion. Check DB ID & integration permissions.")
+        st.error("No data returned from Notion.")
         return
 
-    # Drop blank scribal hand ids
     df["scribal_hand_id"] = df["scribal_hand_id"].astype(str)
     df = df[df["scribal_hand_id"].str.strip() != ""]
 
-    # 1) Build mapping: scribal_hand_id -> first non-empty scribe_name
+    # scribal_hand_id -> label (scribal hand id — first scribe name)
     mapping = {}
     for shid, group in df.groupby("scribal_hand_id"):
         non_empty_names = group["scribe_name"][group["scribe_name"].astype(str).str.strip() != ""]
         label_name = non_empty_names.iloc[0] if not non_empty_names.empty else ""
-        if label_name:
-            label = f"{shid} — {label_name}"
-        else:
-            label = shid
+        label = f"{shid} — {label_name}" if label_name else shid
         mapping[shid] = label
 
     if not mapping:
-        st.error("No scribal hand ids found in the data.")
+        st.error("No scribal hand ids found.")
         return
 
     options = sorted(mapping.keys(), key=lambda k: mapping[k])
 
-    st.sidebar.header("Select scribal hand")
+    # Small sidebar selector only
     selected_shid = st.sidebar.selectbox(
-        "Scribal hand",
+        "scribal hand",
         options=options,
         format_func=lambda k: mapping[k],
     )
 
     sub = df[df["scribal_hand_id"] == selected_shid]
 
-    st.subheader(f"Scribal hand: {mapping[selected_shid]}")
-
-    # 1) Shelfmarks: unique list + count
+    # 1) Manuscripts associated (unique shelfmarks)
     unique_shelfmarks = sorted(
         {s for s in sub["shelfmark"].astype(str).str.strip().tolist() if s}
     )
     num_shelfmarks = len(unique_shelfmarks)
+    shelfmarks_str = ", ".join(unique_shelfmarks)
 
-    st.markdown("### 1. Shelfmarks")
-    st.write(f"**Number of shelfmarks for this scribal hand id:** `{num_shelfmarks}`")
-
-    if num_shelfmarks > 0:
-        st.write("**Shelfmark list:**")
-        st.write(unique_shelfmarks)
-    else:
-        st.write("_No shelfmarks found for this scribal hand id._")
-
-    # 2) Number of colophons (rows where `addition` checkbox is checked)
+    # 2) Number of colophons (addition checked)
     num_colophons = sub["addition"].astype(bool).sum()
 
-    st.markdown("### 2. Colophons (rows with `addition` checked)")
-    st.write(f"**Number of colophons:** `{num_colophons}`")
-
-    with st.expander("Show raw rows for this scribal hand id"):
-        st.dataframe(sub)
+    # 🔹 Minimal output
+    st.markdown(
+        f"**Manuscripts associated:** {num_shelfmarks}"
+        + (f" : {shelfmarks_str}" if shelfmarks_str else "")
+    )
+    st.markdown(f"**Number of colophons:** {num_colophons}")
 
 
 if __name__ == "__main__":
